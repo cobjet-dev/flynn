@@ -90,19 +90,6 @@ type HTTPAPI struct {
 	logger  log.Logger
 }
 
-/* This will setup a SSEWriter + JSONEncoder and Write out the required Headers
- * to the provided HTTP, the Encoder returned is used to write to the SSE
- * Stream + JSON from data/objects/structs.
- */
-func startJSONEventStreaming(w http.ResponseWriter) *json.Encoder {
-	wr := sse.NewWriter(w)
-	enc := json.NewEncoder(httphelper.FlushWriter{Writer: wr, Enabled: true})
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.WriteHeader(200)
-	wr.Flush()
-	return enc
-}
-
 // HTTP Route Handles
 func (c *HTTPAPI) ListHosts(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	l := c.logger.New("fn", "ListHosts")
@@ -132,6 +119,7 @@ func (c *HTTPAPI) RegisterHost(w http.ResponseWriter, r *http.Request, ps httpro
 	}
 
 	ch := make(chan *host.Job)
+	ch1 := make(chan *host.Job)
 
 	c.Cluster.state.Begin()
 	if c.Cluster.state.HostExists(h.ID) {
@@ -139,27 +127,25 @@ func (c *HTTPAPI) RegisterHost(w http.ResponseWriter, r *http.Request, ps httpro
 		httphelper.Error(w, errors.New("sampi: host exists"))
 		return
 	}
-	c.Cluster.state.AddHost(h, ch)
+	c.Cluster.state.AddHost(h, ch1)
 	c.Cluster.state.Commit()
 	go c.Cluster.state.sendEvent(h.ID, "add")
 
-	// "defer" cleanups in a goroutine that waits until the http stream is closed.
 	go func() {
-		<-w.(http.CloseNotifier).CloseNotify()
-		l.Debug("host disconnected, unregistering", "at", "stream_close")
-		c.Cluster.state.Begin()
-		c.Cluster.state.RemoveHost(h.ID)
-		c.Cluster.state.Commit()
-		c.Cluster.state.sendEvent(h.ID, "remove")
+		ll := l.New("host.id", h.ID)
+		ll.Debug("streaming jobs")
+		for data := range ch1 {
+			ll.Debug("sending job event to registered host", "job.id", data.ID)
+			ch <- data
+		}
 	}()
 
-	enc := startJSONEventStreaming(w)
-	ll := l.New("host.id", h.ID)
-	ll.Debug("streaming jobs")
-	for data := range ch {
-		ll.Debug("sending job event to registered host", "job.id", data.ID)
-		enc.Encode(data)
-	}
+	sse.ServeStream(w, ch)
+	l.Debug("host disconnected, unregistering", "at", "stream_close")
+	c.Cluster.state.Begin()
+	c.Cluster.state.RemoveHost(h.ID)
+	c.Cluster.state.Commit()
+	c.Cluster.state.sendEvent(h.ID, "remove")
 }
 
 func (c *HTTPAPI) AddJobs(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
@@ -206,16 +192,10 @@ func (c *HTTPAPI) StreamHostEvents(w http.ResponseWriter, r *http.Request, ps ht
 		httphelper.Error(w, err)
 		return
 	}
-	go func() {
-		<-w.(http.CloseNotifier).CloseNotify()
-		l.Debug("http stream closed")
-		close(done)
-	}()
-	enc := startJSONEventStreaming(w)
 	l.Debug("streaming host events")
-	for data := range ch {
-		enc.Encode(data)
-	}
+	sse.ServeStream(w, ch)
+	l.Debug("http stream closed")
+	done <- true
 }
 
 func (c *HTTPAPI) RegisterRoutes(r *httprouter.Router) error {
