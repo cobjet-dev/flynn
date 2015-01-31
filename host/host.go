@@ -161,19 +161,21 @@ func runDaemon(args *docopt.Args) {
 
 	// create default volume backend and minimum viable storage pool
 	// TODO: need to collect config or cli flags for either initializable params if the min-viable zpool doesn't already exist or if the default is overriden
-	volProv, err := zfsVolume.NewProvider(&zfsVolume.ProviderConfig{
-		DatasetName: "flynn-default",
-		Make: &zfsVolume.MakeDev{
-			BackingFilename: "/var/lib/flynn/volumes/zfs/vdev/flynn-default-zpool.vdev",
-			Size:            int64(math.Pow(2, float64(30))),
-		},
-	})
-	if err != nil {
-		log.Fatalf("unable to create volume backend: %s", err)
+	volProvFn := func() (volume.Provider, error) {
+		return zfsVolume.NewProvider(&zfsVolume.ProviderConfig{
+			DatasetName: "flynn-default",
+			Make: &zfsVolume.MakeDev{
+				BackingFilename: "/var/lib/flynn/volumes/zfs/vdev/flynn-default-zpool.vdev",
+				Size:            int64(math.Pow(2, float64(30))),
+			},
+		})
 	}
 
 	// create volume manager
-	vman := volume.NewManager(volProv)
+	vman, err := volume.NewManager("/var/lib/flynn/volumes/volumes.bolt", volProvFn)
+	if err != nil {
+		shutdown.Fatal(err)
+	}
 
 	switch backendName {
 	case "libvirt-lxc":

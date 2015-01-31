@@ -129,6 +129,21 @@ func (b Provider) NewVolume() (volume.Volume, error) {
 	return v, nil
 }
 
+func (b *Provider) MarshalGlobalState() ([]byte, error) {
+	// oh, yeah.  so there's no easy way for this to say "nothx", unless we give it the bucket.
+	// or, a convention of returning nil for the bytes if there's nothing new going on.
+	// which... i don't know how you tell when it's the first time.
+	return nil, nil // TODO
+}
+
+func (b *Provider) MarshalVolumeState(volumeID string) ([]byte, error) {
+	return nil, nil // TODO
+}
+
+func (b *Provider) RestoreVolumeState(volumeID string, data []byte) error {
+	return nil // TODO
+}
+
 func (v *zfsVolume) Info() *volume.Info {
 	return v.info
 }

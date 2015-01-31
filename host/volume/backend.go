@@ -13,6 +13,10 @@ import (
 */
 type Provider interface {
 	NewVolume() (Volume, error)
+
+	MarshalGlobalState() ([]byte, error)
+	MarshalVolumeState(volumeID string) ([]byte, error)
+	RestoreVolumeState(volumeID string, data []byte) error
 }
 
 type ProviderSpec struct {
