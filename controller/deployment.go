@@ -19,6 +19,7 @@ import (
 	"github.com/flynn/flynn/pkg/httphelper"
 	"github.com/flynn/flynn/pkg/postgres"
 	"github.com/flynn/flynn/pkg/random"
+	"github.com/flynn/flynn/pkg/sse"
 )
 
 type DeploymentRepo struct {
@@ -164,29 +165,9 @@ func (c *controllerAPI) CreateDeployment(ctx context.Context, w http.ResponseWri
 
 // TODO: share with controller streamJobs
 func streamDeploymentEvents(deploymentID string, w http.ResponseWriter, repo *DeploymentRepo) (err error) {
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-
-	sendKeepAlive := func() error {
-		if _, err := w.Write([]byte(":\n")); err != nil {
-			return err
-		}
-		w.(http.Flusher).Flush()
-		return nil
-	}
-
-	sendDeploymentEvent := func(e *ct.DeploymentEvent) error {
-		if _, err := fmt.Fprintf(w, "id: %d\ndata: ", e.ID); err != nil {
-			return err
-		}
-		if err := json.NewEncoder(w).Encode(e); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte("\n")); err != nil {
-			return err
-		}
-		w.(http.Flusher).Flush()
-		return nil
-	}
+	ch := make(chan *ct.DeploymentEvent)
+	s := sse.NewStream(w, ch)
+	s.Serve()
 
 	connected := make(chan struct{})
 	done := make(chan struct{})
@@ -211,10 +192,8 @@ func streamDeploymentEvents(deploymentID string, w http.ResponseWriter, repo *De
 		return
 	}
 	for _, e := range events {
-		if err = sendDeploymentEvent(e); err != nil {
-			return
-		}
 		currID = e.ID
+		ch <- e
 	}
 
 	select {
@@ -223,21 +202,12 @@ func streamDeploymentEvents(deploymentID string, w http.ResponseWriter, repo *De
 	case <-connected:
 	}
 
-	if err = sendKeepAlive(); err != nil {
-		return
-	}
-
-	closed := w.(http.CloseNotifier).CloseNotify()
 	for {
 		select {
+		case <-s.Done:
+			return
 		case <-done:
 			return
-		case <-closed:
-			return
-		case <-time.After(30 * time.Second):
-			if err = sendKeepAlive(); err != nil {
-				return
-			}
 		case n := <-listener.Notify:
 			id, err := strconv.ParseInt(n.Extra, 10, 64)
 			if err != nil {
@@ -250,11 +220,10 @@ func streamDeploymentEvents(deploymentID string, w http.ResponseWriter, repo *De
 			if err != nil {
 				return err
 			}
-			if err = sendDeploymentEvent(e); err != nil {
-				return err
-			}
+			ch <- e
 		}
 	}
+	return
 }
 
 func (r *DeploymentRepo) listEvents(deploymentID string, sinceID int64) ([]*ct.DeploymentEvent, error) {

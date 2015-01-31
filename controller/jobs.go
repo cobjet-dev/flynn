@@ -333,29 +333,8 @@ func streamJobs(req *http.Request, w http.ResponseWriter, app *ct.App, repo *Job
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-
-	sendKeepAlive := func() error {
-		if _, err := w.Write([]byte(":\n")); err != nil {
-			return err
-		}
-		w.(http.Flusher).Flush()
-		return nil
-	}
-
-	sendJobEvent := func(e *ct.JobEvent) error {
-		if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: ", e.ID, e.State); err != nil {
-			return err
-		}
-		if err := json.NewEncoder(w).Encode(e); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte("\n")); err != nil {
-			return err
-		}
-		w.(http.Flusher).Flush()
-		return nil
-	}
+	ch := make(chan *ct.JobEvent)
+	s := sse.NewStream(w, ch)
 
 	connected := make(chan struct{})
 	done := make(chan struct{})
@@ -389,9 +368,7 @@ func streamJobs(req *http.Request, w http.ResponseWriter, app *ct.App, repo *Job
 		// events are in ID DESC order, so iterate in reverse
 		for i := len(events) - 1; i >= 0; i-- {
 			e := events[i]
-			if err := sendJobEvent(e); err != nil {
-				return err
-			}
+			ch <- e
 			currID = e.ID
 		}
 	}
@@ -402,21 +379,12 @@ func streamJobs(req *http.Request, w http.ResponseWriter, app *ct.App, repo *Job
 	case <-connected:
 	}
 
-	if err = sendKeepAlive(); err != nil {
-		return
-	}
-
-	closed := w.(http.CloseNotifier).CloseNotify()
 	for {
 		select {
+		case <-s.Done:
+			return
 		case <-done:
 			return
-		case <-closed:
-			return
-		case <-time.After(30 * time.Second):
-			if err := sendKeepAlive(); err != nil {
-				return err
-			}
 		case n := <-listener.Notify:
 			id, err := strconv.ParseInt(n.Extra, 10, 64)
 			if err != nil {
@@ -429,9 +397,7 @@ func streamJobs(req *http.Request, w http.ResponseWriter, app *ct.App, repo *Job
 			if err != nil {
 				return err
 			}
-			if err = sendJobEvent(e); err != nil {
-				return err
-			}
+			ch <- e
 		}
 	}
 }
