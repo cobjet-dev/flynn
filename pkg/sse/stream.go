@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"time"
 
 	hh "github.com/flynn/flynn/pkg/httphelper"
 )
@@ -44,12 +45,18 @@ func ServeStream(w http.ResponseWriter, ch interface{}) *Stream {
 				},
 				{
 					Dir:  reflect.SelectRecv,
+					Chan: reflect.ValueOf(time.After(30 * time.Second)),
+				},
+				{
+					Dir:  reflect.SelectRecv,
 					Chan: chValue,
 				},
 			})
 			switch chosen {
 			case 0:
 				return
+			case 1:
+				s.sendKeepAlive()
 			default:
 				if ok {
 					if err := enc.Encode(v.Interface()); err != nil {
@@ -74,6 +81,15 @@ func (s *Stream) wait() {
 func (s *Stream) done() {
 	close(s.doneChan)
 	s.Close()
+}
+
+func (s *Stream) sendKeepAlive() error {
+	_, err := s.w.w.Write([]byte(":\n"))
+	if err != nil {
+		return err
+	}
+	s.w.Flush()
+	return nil
 }
 
 func (s *Stream) Close() {
