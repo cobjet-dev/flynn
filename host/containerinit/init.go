@@ -36,6 +36,9 @@ import (
 	"github.com/flynn/flynn/pkg/rpcplus"
 	"github.com/flynn/flynn/pkg/rpcplus/fdrpc"
 	"github.com/flynn/flynn/pkg/shutdown"
+	"github.com/flynn/flynn/host/types"
+	"github.com/flynn/flynn/discoverd/client"
+	"github.com/flynn/flynn/discoverd/health"
 )
 
 type Config struct {
@@ -47,6 +50,7 @@ type Config struct {
 	OpenStdin bool
 	Env       map[string]string
 	Args      []string
+	Services  []host.PortService
 }
 
 const SharedPath = "/.container-shared"
@@ -395,6 +399,51 @@ func getCmdPath(c *Config) (string, error) {
 	return cmdPath, nil
 }
 
+func monitor(config host.PortService) discoverd.Heartbeater {
+	var check health.Check
+	switch config.Check.Type {
+	case "tcp":
+		check = &health.TCPCheck{Addr: config.Check.Host}
+	case "http", "https":
+		check = &health.HTTPCheck{
+			URL: config.Check.Path,
+			Host: config.Check.Host,
+			StatusCode: config.Check.Status,
+			MatchBytes: []byte(config.Check.Match),
+		}
+	default:
+		// unsupported checker type
+		panic("unsupported")
+	}
+	reg := health.Registration{
+		Registrar: discoverd.DefaultClient,
+		Service: config.Name,
+		Instance: &discoverd.Instance{},
+		Monitor: health.Monitor{
+			Interval: config.Check.Interval,
+			Threshold: config.Check.Threshold,
+		}.Run,
+		Check: check,
+	}
+	hb := reg.Register()
+
+	if config.Check.KillDown {
+		// ignore events for the first StartTimeout interval
+		events := make(chan health.MonitorEvent)
+		reg.Events = events
+		go func(){
+			for e := range events {
+				if e.Status != health.MonitorStatusDown {
+					continue
+				}
+				// kill process
+			}
+		}()
+	}
+
+	return hb
+}
+
 func babySit(process *os.Process) int {
 	// Forward all signals to the app
 	sigchan := make(chan os.Signal, 1)
@@ -513,6 +562,14 @@ func containerInitApp(c *Config) error {
 	init.changeState(StateRunning, "", -1)
 
 	init.mtx.Unlock() // Allow calls
+	// monitor services
+	for _, service := range c.Services {
+		if !service.Create {
+			continue
+		}
+		hb := monitor(service)
+		defer hb.Close()
+	}
 	exitCode := babySit(init.process)
 	init.mtx.Lock()
 	init.changeState(StateExited, "", exitCode)
